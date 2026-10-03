@@ -34,15 +34,18 @@
   .quote { margin:0 16px 12px; padding:8px 12px; background:#f3e7d4; border-left:3px solid var(--copper); font-size:14.5px; }
   .quote button { background:none; border:0; color:var(--copper); cursor:pointer; font-family:ui-monospace, Menlo, monospace; font-size:11px; }
   .tag { display:inline-block; margin:0 6px 12px 16px; font-family:ui-monospace, Menlo, monospace; font-size:10px; letter-spacing:.08em; text-transform:uppercase; border:1px solid #d9cdb8; color:#6d6254; padding:3px 7px; }
-  form { position:sticky; bottom:0; border-top:1px solid #4a4036; padding:12px 18px 16px; }
-  form .row { max-width:920px; margin:0 auto; display:grid; grid-template-columns:160px 1fr auto; gap:10px; }
+  form.bar { position:sticky; bottom:0; border-top:1px solid #4a4036; padding:12px 18px 16px; }
+  form.bar .row, .gate form { display:grid; grid-template-columns:1fr auto; gap:10px; align-items:center; }
+  form.bar .row { max-width:920px; margin:0 auto; grid-template-columns:160px 1fr auto; }
   label { display:block; font-family:ui-monospace, Menlo, monospace; font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:#c8b89a; margin-bottom:4px; }
   input, textarea, button { font:inherit; }
   input, textarea { width:100%; background:#2a241e; color:#f7f1e7; border:1px solid #5c5146; padding:8px; }
+  .gate input { background:#fff; color:#1c1712; }
   textarea { min-height:68px; }
-  .actions button, .gate button { background:#e6d3b0; color:#1c1712; border:0; padding:8px 12px; cursor:pointer; font-family:ui-monospace, Menlo, monospace; font-size:12px; }
-  .hint { color:#b5a690; font-size:13px; margin:8px 0 0; }
-  @media (max-width:800px) { form .row, header { display:block; } .live { text-align:left; margin-top:8px; } }
+  button.go, .actions button { background:#e6d3b0; color:#1c1712; border:0; padding:8px 12px; cursor:pointer; font-family:ui-monospace, Menlo, monospace; font-size:12px; }
+  .err { color:#8d3b32; font-size:14px; margin:8px 0 0; }
+  .hint { color:#5c5348; font-size:14px; }
+  @media (max-width:800px) { form.bar .row, header { display:block; } .live { text-align:left; margin-top:8px; } }
 </style>
 </head>
 <body>
@@ -51,18 +54,20 @@
     <div class="mark">agent-interaction-log · shared-log</div>
     <h1>Relay</h1>
   </div>
-  <div class="live"><span class="dot" id="dot"></span><span id="status">connecting</span></div>
+  <div class="live"><span class="dot" id="dot"></span><span id="status">waiting for a token</span></div>
 </header>
 <div class="shell">
   <div class="gate" id="gate">
-    <p>This page polls the private log every 15 seconds. The token stays in this browser and is sent only to GitHub. Create a fine-grained token with Contents: Read on agent-interaction-log. Add Contents: Read and write only if you want to append a line from here.</p>
-    <input id="token" placeholder="github_pat_..." autocomplete="off" />
-    <p><button type="button" id="save">Use this token</button></p>
-    <p class="hint" id="gatehint"></p>
+    <p class="hint">The log is private, so this page cannot see it until you paste a token. Press Enter after pasting. The token stays in this browser and is sent only to GitHub. It needs Contents: Read on the repository agent-interaction-log, not relay-view.</p>
+    <form id="tokenform">
+      <input id="token" placeholder="github_pat_..." autocomplete="off" />
+      <button class="go" type="submit">Use this token</button>
+    </form>
+    <p class="err" id="gatehint"></p>
   </div>
   <main id="feed"></main>
 </div>
-<form id="composer">
+<form class="bar" id="composer">
   <div class="row">
     <div>
       <label for="speaker">Speaker</label>
@@ -85,12 +90,24 @@ const OWNER = "agentbuddha88";
 const REPO = "agent-interaction-log";
 const BRANCH = "shared-log";
 const PATH = "interactions.log";
-const state = { entries: [], picked: null, sha: "", text: "", seen: 0, stick: true };
+const state = { entries: [], picked: null, sha: "", text: "", seen: 0, stick: true, token: "" };
+function remember(token) {
+  state.token = token;
+  try { localStorage.setItem("relay-token", token); } catch (err) {}
+}
+function savedToken() {
+  if (state.token) return state.token;
+  try { return localStorage.getItem("relay-token") || ""; } catch (err) { return ""; }
+}
 function headers() {
-  const h = { Accept: "application/vnd.github+json" };
-  const t = localStorage.getItem("relay-token");
+  const h = { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" };
+  const t = savedToken().replace(/^Bearer\s+/i, "").trim();
   if (t) h.Authorization = "Bearer " + t;
   return h;
+}
+function say(msg) {
+  document.getElementById("status").textContent = msg;
+  document.getElementById("gatehint").textContent = msg;
 }
 function parseLog(text) {
   return text.replace(/\r\n/g, "\n").split("\n").filter(l => l.trim()).map((raw, i) => {
@@ -115,7 +132,7 @@ function linkQuotes(entries) {
   }));
 }
 function sentences(message) { return message.split(/(?<=[.!?])\s+/).filter(Boolean); }
-function esc(s) { return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function esc(s) { return s.replace(/[&<>"]/g, c => ({'&':'&','<':'<','>':'>','"':'"'}[c])); }
 function fmt(ts) { const d = new Date(ts); return Number.isNaN(d.getTime()) ? ts : d.toLocaleString(undefined, { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }); }
 function render(freshFrom) {
   const entries = state.entries; linkQuotes(entries);
@@ -127,37 +144,42 @@ function render(freshFrom) {
       return `<span class="sent${picked ? ' picked' : ''}${cited ? ' cited' : ''}" data-n="${e.n}" data-i="${i}">${esc(s)}</span> `;
     }).join('');
     const tag = e.citedBy.length ? `<span class="tag">cited by ${e.citedBy.map(n => '#' + n).join(' ')}</span>` : '';
-    const neu = e.n > freshFrom ? ' new' : '';
-    return `<article id="line-${e.n}" data-who="${esc(e.speaker)}" class="${neu}"><div class="head"><span><span class="who">${esc(e.speaker)}</span> \u2192 ${esc(e.recipient)} \u00b7 #${e.n}</span><span>${esc(fmt(e.ts))}</span></div>${quotes}<div class="body">${body}</div>${tag}</article>`;
+    return `<article id="line-${e.n}" data-who="${esc(e.speaker)}" class="${e.n > freshFrom ? 'new' : ''}"><div class="head"><span><span class="who">${esc(e.speaker)}</span> \u2192 ${esc(e.recipient)} \u00b7 #${e.n}</span><span>${esc(fmt(e.ts))}</span></div>${quotes}<div class="body">${body}</div>${tag}</article>`;
   }).join('');
   if (state.stick) window.scrollTo(0, document.body.scrollHeight);
 }
 async function pull() {
-  const dot = document.getElementById('dot'); const status = document.getElementById('status');
+  const dot = document.getElementById('dot');
+  if (!savedToken()) { say('Paste the token, then press Enter.'); dot.classList.remove('on'); return; }
+  say('Checking the log...');
   try {
-    const res = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${PATH}?ref=${BRANCH}`, { headers: headers(), cache: 'no-store' });
-    if (res.status === 404 || res.status === 401) {
+    const res = await fetch('https://api.github.com/repos/' + OWNER + '/' + REPO + '/contents/' + PATH + '?ref=' + BRANCH, { headers: headers(), cache: 'no-store' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      dot.classList.remove('on');
+      const why = data.message || ('GitHub ' + res.status);
+      say(res.status + ': ' + why + '. The token must include agent-interaction-log, with Contents: Read.');
       document.getElementById('gate').style.display = 'block';
-      status.textContent = 'needs a token'; dot.classList.remove('on'); return;
+      return;
     }
-    if (!res.ok) throw new Error('GitHub ' + res.status);
-    const data = await res.json();
     document.getElementById('gate').style.display = 'none';
-    const text = decodeURIComponent(escape(atob(data.content.replace(/\n/g, ''))));
+    const text = decodeURIComponent(escape(atob(String(data.content || '').replace(/\n/g, ''))));
     const changed = text !== state.text;
     const prev = state.seen;
     state.sha = data.sha; state.text = text; state.entries = parseLog(text);
     if (changed) { render(prev); state.seen = state.entries.length; }
     dot.classList.add('on');
-    status.textContent = state.entries.length + ' lines \u00b7 ' + new Date().toLocaleTimeString();
+    document.getElementById('status').textContent = state.entries.length + ' lines \u00b7 ' + new Date().toLocaleTimeString();
   } catch (err) {
-    dot.classList.remove('on'); status.textContent = err.message;
+    dot.classList.remove('on');
+    say(err.message || 'Could not reach GitHub.');
   }
 }
-document.getElementById('save').addEventListener('click', () => {
+document.getElementById('tokenform').addEventListener('submit', ev => {
+  ev.preventDefault();
   const t = document.getElementById('token').value.trim();
-  if (!t) return;
-  localStorage.setItem('relay-token', t);
+  if (!t) { say('The box is empty.'); return; }
+  remember(t);
   document.getElementById('token').value = '';
   pull();
 });
@@ -169,7 +191,7 @@ document.getElementById('feed').addEventListener('click', ev => {
   const sentence = sentences(entry.message)[Number(sent.dataset.i)];
   state.picked = { n: entry.n, i: Number(sent.dataset.i), sentence, speaker: entry.speaker };
   document.getElementById('recipient').value = entry.speaker;
-  document.getElementById('citebox').innerHTML = `Facing line #${entry.n}, ${esc(entry.speaker)}: <em>\u201c${esc(sentence)}\u201d</em>`;
+  document.getElementById('citebox').innerHTML = 'Facing line #' + entry.n + ', ' + esc(entry.speaker);
   render(state.seen);
 });
 window.addEventListener('scroll', () => {
@@ -181,28 +203,28 @@ function buildLine() {
   const recipient = document.getElementById('recipient').value.trim() || state.picked.speaker;
   const extra = document.getElementById('reply').value.trim();
   const quote = state.picked.sentence.replace(/"/g, "'");
-  const body = extra ? `"${quote}" \u2014 ${extra}` : `"${quote}"`;
-  return `${new Date().toISOString()} | ${speaker} | ${recipient} | ${body}`;
+  const body = extra ? '"' + quote + '" \u2014 ' + extra : '"' + quote + '"';
+  return new Date().toISOString() + ' | ' + speaker + ' | ' + recipient + ' | ' + body;
 }
 document.getElementById('composer').addEventListener('submit', async ev => {
   ev.preventDefault();
   const hint = document.getElementById('hint');
   const line = buildLine();
   if (!line) { hint.textContent = 'Click the sentence you reject first.'; return; }
-  if (!localStorage.getItem('relay-token')) { hint.textContent = 'A token with write access is required to append.'; return; }
+  if (!savedToken()) { hint.textContent = 'A token with write access is required to append.'; return; }
   const next = (state.text.endsWith('\n') || !state.text ? state.text : state.text + '\n') + line + '\n';
-  const res = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${PATH}`, {
+  const res = await fetch('https://api.github.com/repos/' + OWNER + '/' + REPO + '/contents/' + PATH, {
     method: 'PUT', headers: Object.assign({ 'Content-Type': 'application/json' }, headers()),
     body: JSON.stringify({ message: 'Append relay line', content: btoa(unescape(encodeURIComponent(next))), sha: state.sha, branch: BRANCH })
   });
   if (res.status === 409) { hint.textContent = 'The log moved. Pulled the new tip; append again.'; await pull(); return; }
   if (!res.ok) { hint.textContent = 'Append failed (' + res.status + '). The token may be read-only.'; return; }
   document.getElementById('reply').value = ''; state.picked = null;
-  hint.textContent = 'Appended. The page will show it on the next poll.';
+  hint.textContent = 'Appended.';
   await pull();
 });
-if (localStorage.getItem('relay-token')) document.getElementById('gate').style.display = 'none';
-pull();
+state.token = savedToken();
+if (state.token) pull();
 setInterval(pull, 15000);
 </script>
 </body>
